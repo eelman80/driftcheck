@@ -52,10 +52,35 @@ def _has_tags(s3_client: Any, bucket_name: str) -> bool:
         raise
 
 
+def fetch_ec2_instance(instance_id: str, session: boto3.Session | None = None) -> LiveResource:
+    """Fetch live attributes for an EC2 instance."""
+    ec2 = (session or boto3).client("ec2")
+    try:
+        resp = ec2.describe_instances(InstanceIds=[instance_id])
+        reservations = resp.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ClientError(
+                {"Error": {"Code": "InvalidInstanceID.NotFound", "Message": f"Instance {instance_id!r} not found"}},
+                "DescribeInstances",
+            )
+        instance = reservations[0]["Instances"][0]
+        attributes = {
+            "instance_type": instance.get("InstanceType"),
+            "state": instance.get("State", {}).get("Name"),
+            "ami": instance.get("ImageId"),
+            "tags": {t["Key"]: t["Value"] for t in instance.get("Tags", [])},
+        }
+        return LiveResource(resource_type="aws_instance", resource_id=instance_id, attributes=attributes)
+    except ClientError as exc:
+        logger.error("Failed to fetch EC2 instance %s: %s", instance_id, exc)
+        raise
+
+
 def fetch_resource(resource_type: str, resource_id: str, session: boto3.Session | None = None) -> LiveResource:
     """Dispatch to the appropriate fetcher based on resource_type."""
     fetchers = {
         "aws_s3_bucket": lambda rid: fetch_s3_bucket(rid, session),
+        "aws_instance": lambda rid: fetch_ec2_instance(rid, session),
     }
     if resource_type not in fetchers:
         raise NotImplementedError(f"No live fetcher implemented for resource type: {resource_type!r}")
