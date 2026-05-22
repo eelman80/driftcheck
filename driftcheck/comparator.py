@@ -1,74 +1,83 @@
-"""Compares planned resource attributes against live state to detect drift."""
+"""Compare planned resources against live infrastructure state."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import List
 
-from driftcheck.fetcher import LiveResource
 from driftcheck.parser import PlannedResource
+from driftcheck.fetcher import LiveResource
+
+
+@dataclass
+class FieldDiff:
+    """A single field that differs between plan and live state."""
+
+    field: str
+    planned: object
+    actual: object
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"FieldDiff(field={self.field!r}, planned={self.planned!r}, actual={self.actual!r})"
 
 
 @dataclass
 class DriftResult:
-    """Holds the drift comparison result for a single resource."""
+    """Outcome of comparing one planned resource to its live counterpart."""
 
     resource_type: str
     resource_id: str
-    drifted: bool
-    differences: list[dict[str, Any]] = field(default_factory=list)
+    diffs: List[FieldDiff] = field(default_factory=list)
 
-    def __repr__(self) -> str:
-        status = "DRIFTED" if self.drifted else "OK"
-        return f"DriftResult({status}, type={self.resource_type!r}, id={self.resource_id!r})"
+    @property
+    def drifted(self) -> bool:
+        return bool(self.diffs)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"DriftResult(resource_type={self.resource_type!r}, "
+            f"resource_id={self.resource_id!r}, drifted={self.drifted})"
+        )
 
 
 def compare(planned: PlannedResource, live: LiveResource) -> DriftResult:
-    """Compare a planned resource against its live counterpart.
+    """Return a DriftResult describing every field that has drifted."""
+    diffs: List[FieldDiff] = []
 
-    Only attributes present in the plan are checked; extra live attributes
-    are ignored to avoid noise from provider-computed fields.
-    """
-    differences: list[dict[str, Any]] = []
-
-    for key, planned_value in planned.attributes.items():
-        live_value = live.attributes.get(key)
-        if live_value != planned_value:
-            differences.append(
-                {
-                    "attribute": key,
-                    "planned": planned_value,
-                    "live": live_value,
-                }
-            )
+    for key, planned_val in planned.attributes.items():
+        actual_val = live.attributes.get(key)
+        if actual_val != planned_val:
+            diffs.append(FieldDiff(field=key, planned=planned_val, actual=actual_val))
 
     return DriftResult(
         resource_type=planned.resource_type,
-        resource_id=planned.resource_id,
-        drifted=bool(differences),
-        differences=differences,
+        resource_id=live.resource_id,
+        diffs=diffs,
     )
 
 
-def compare_all(planned_resources: list[PlannedResource], live_resources: list[LiveResource]) -> list[DriftResult]:
-    """Compare a list of planned resources against a list of live resources.
-
-    Matches resources by (resource_type, resource_id). Unmatched planned
-    resources are reported as fully drifted (resource missing live).
-    """
+def compare_all(
+    planned_resources: List[PlannedResource],
+    live_resources: List[LiveResource],
+) -> List[DriftResult]:
+    """Pair planned resources with live resources by type and id, then compare."""
     live_index = {(r.resource_type, r.resource_id): r for r in live_resources}
-    results: list[DriftResult] = []
+    results: List[DriftResult] = []
 
     for planned in planned_resources:
         key = (planned.resource_type, planned.resource_id)
         live = live_index.get(key)
         if live is None:
+            # Resource exists in plan but not live — treat every field as drifted
+            diffs = [
+                FieldDiff(field=k, planned=v, actual=None)
+                for k, v in planned.attributes.items()
+            ]
             results.append(
                 DriftResult(
                     resource_type=planned.resource_type,
                     resource_id=planned.resource_id,
-                    drifted=True,
-                    differences=[{"attribute": "*", "planned": "<exists>", "live": "<not found>"}],
+                    diffs=diffs,
                 )
             )
         else:

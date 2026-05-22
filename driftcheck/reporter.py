@@ -1,18 +1,22 @@
-"""Reporter module for formatting and outputting drift results."""
+"""Aggregate DriftResults into a human-readable DriftReport."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import List
-from dataclasses import dataclass
 
 from driftcheck.comparator import DriftResult
 
 
 @dataclass
 class DriftReport:
-    """Aggregated report of all drift results."""
+    """Collection of DriftResults with summary helpers."""
 
-    results: List[DriftResult]
+    results: List[DriftResult] = field(default_factory=list)
+
+    # ------------------------------------------------------------------
+    # Summary properties
+    # ------------------------------------------------------------------
 
     @property
     def total(self) -> int:
@@ -20,64 +24,42 @@ class DriftReport:
 
     @property
     def drifted(self) -> List[DriftResult]:
-        return [r for r in self.results if r.has_drift]
+        return [r for r in self.results if r.drifted]
 
     @property
     def clean(self) -> List[DriftResult]:
-        return [r for r in self.results if not r.has_drift]
+        return [r for r in self.results if not r.drifted]
 
     @property
     def drift_count(self) -> int:
         return len(self.drifted)
 
-    def __repr__(self) -> str:  # pragma: no cover
+    # ------------------------------------------------------------------
+    # Display
+    # ------------------------------------------------------------------
+
+    def summary_text(self) -> str:
+        """Return a short human-readable summary string."""
         return (
-            f"DriftReport(total={self.total}, drifted={self.drift_count}, "
-            f"clean={len(self.clean)})"
+            f"DriftReport: {self.total} resource(s) checked — "
+            f"{self.drift_count} drifted, {self.total - self.drift_count} clean."
         )
 
-
-def format_text(report: DriftReport) -> str:
-    """Return a human-readable text summary of the drift report."""
-    lines: List[str] = []
-    lines.append(f"DriftCheck Report — {report.total} resource(s) evaluated")
-    lines.append("=" * 50)
-
-    if not report.results:
-        lines.append("No resources to report.")
+    def detailed_text(self) -> str:
+        """Return a multi-line report listing every drifted field."""
+        lines = [self.summary_text()]
+        for result in self.drifted:
+            lines.append(
+                f"  [{result.resource_type}] {result.resource_id}:"
+            )
+            for diff in result.diffs:
+                lines.append(
+                    f"    - {diff.field}: planned={diff.planned!r} "
+                    f"actual={diff.actual!r}"
+                )
         return "\n".join(lines)
 
-    for result in report.results:
-        status = "DRIFT" if result.has_drift else "OK"
-        lines.append(f"[{status}] {result.resource_id} ({result.resource_type})")
-        for field, (planned, live) in result.diffs.items():
-            lines.append(f"       {field}: planned={planned!r}  live={live!r}")
-
-    lines.append("=" * 50)
-    lines.append(
-        f"Summary: {report.drift_count} drifted, {len(report.clean)} clean"
-    )
-    return "\n".join(lines)
-
-
-def format_json(report: DriftReport) -> dict:
-    """Return a JSON-serialisable dict representation of the drift report."""
-    return {
-        "summary": {
-            "total": report.total,
-            "drifted": report.drift_count,
-            "clean": len(report.clean),
-        },
-        "resources": [
-            {
-                "resource_id": r.resource_id,
-                "resource_type": r.resource_type,
-                "has_drift": r.has_drift,
-                "diffs": {
-                    field: {"planned": planned, "live": live}
-                    for field, (planned, live) in r.diffs.items()
-                },
-            }
-            for r in report.results
-        ],
-    }
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"DriftReport(total={self.total}, drift_count={self.drift_count})"
+        )
